@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>HWID Yönetim</title></head>
+  <body>
+    <h1>HWID Yönetim Paneli</h1>
+    <p><a href="{{ url_for('admin_logout') }}">Çıkış</a></p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul>
+        {% for cat, msg in messages %}
+          <li><strong>{{ cat }}:</strong> {{ msg }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <table border="1" cellpadding="6" cellspacing="0">
+      <tr>
+        <th>HWID</th><th>Status</th><th>Expires At (UTC)</th><th>Note</th><th>Actions</th>
+      </tr>
+      {% for row in licenses %}
+      <tr>
+        <td>{{ row.hwid }}</td>
+        <td>{{ row.effective_status or row.status }}</td>
+        <td>{{ row.expires_at or "-" }}</td>
+        <td>{{ row.note or "-" }}</td>
+        <td>
+          <form style="display:inline" method="post" action="{{ url_for('admin_approve') }}">
+            <input type="hidden" name="hwid" value="{{ row.hwid }}">
+            <input name="days" value="30" style="width:60px">
+            <input name="note" placeholder="Not (opsiyonel)">
+            <button type="submit">Onayla (gün)</button>
+          </form>
+
+          <form style="display:inline" method="post" action="{{ url_for('admin_revoke') }}">
+            <input type="hidden" name="hwid" value="{{ row.hwid }}">
+            <input name="note" placeholder="Neden (opsiyonel)">
+            <button type="submit">Reddet / İptal</button>
+          </form>
+
+          <form style="display:inline" method="post" action="{{ url_for('admin_reactivate') }}">
+            <input type="hidden" name="hwid" value="{{ row.hwid }}">
+            <input name="days" value="30" style="width:60px">
+            <button type="submit">Tekrar Aktif</button>
+          </form>
+
+          <form style="display:inline" method="post" action="{{ url_for('admin_delete') }}" onsubmit="return confirm('Gerçekten sil?')">
+            <input type="hidden" name="hwid" value="{{ row.hwid }}">
+            <button type="submit">Sil</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </body>
+</html>

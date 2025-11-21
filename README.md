@@ -1,0 +1,3 @@
+export ADMIN_USER=admin
+export ADMIN_PASS=supersecret    # veya ADMIN_PASS_HASH=pbkdf2:sha256:...
+export FLASK_SECRET=some-secret
