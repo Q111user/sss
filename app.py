@@ -5,39 +5,36 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# Config
+# --- AYARLAR ---
 DATABASE = os.environ.get("DB_PATH", "data/licenses.db")
-ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
-ADMIN_PASS = os.environ.get("ADMIN_PASS_HASH")  # hashed password expected
-if not ADMIN_PASS:
-    # fallback: if plain password provided in env, hash it (only for dev)
-    raw = os.environ.get("ADMIN_PASS", "changeme")
-    ADMIN_PASS = generate_password_hash(raw)
+SECRET_KEY = os.environ.get("FLASK_SECRET", "lunar-secret-key-change-me")
 
-SECRET_KEY = os.environ.get("FLASK_SECRET", "dev-secret-key")
-APP_HOST = "0.0.0.0"
-APP_PORT = int(os.environ.get("PORT", 5000))
+# Şifre Mantığı: Render'da 'ADMIN_PASS' değişkenine ne yazarsan şifren o olur.
+# Varsayılan: admin123
+RAW_PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
+ADMIN_PASS_HASH = generate_password_hash(RAW_PASSWORD)
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=SECRET_KEY)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
-# DB helpers
+# DB Yardımcıları
 def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    os.makedirs(os.path.dirname(DATABASE) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(DATABASE) or "data", exist_ok=True)
     conn = get_db()
     c = conn.cursor()
     c.execute("""
     CREATE TABLE IF NOT EXISTS licenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hwid TEXT UNIQUE NOT NULL,
-        status TEXT NOT NULL, -- pending | ok | revoked | error
-        key TEXT, -- base64 encoded license payload (optional)
-        expires_at TEXT, -- ISO datetime UTC or NULL
+        status TEXT NOT NULL, 
+        key TEXT, 
+        expires_at TEXT, 
         note TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -46,175 +43,148 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Veritabanı işlemleri (Okuma/Yazma)
 def upsert_license(hwid, status="pending", key=None, expires_at=None, note=None):
     now = datetime.utcnow().isoformat()
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT id FROM licenses WHERE hwid = ?", (hwid,))
-    row = c.fetchone()
-    if row:
-        c.execute("""UPDATE licenses SET status=?, key=?, expires_at=?, note=?, updated_at=? WHERE hwid=?""",
-                  (status, key, expires_at, note, now, hwid))
-    else:
-        c.execute("""INSERT INTO licenses (hwid,status,key,expires_at,note,created_at,updated_at)
-                     VALUES (?,?,?,?,?,?,?)""", (hwid,status,key,expires_at,note,now,now))
-    conn.commit(); conn.close()
+    try:
+        c.execute("SELECT id FROM licenses WHERE hwid = ?", (hwid,))
+        row = c.fetchone()
+        if row:
+            c.execute("""UPDATE licenses SET status=?, key=?, expires_at=?, note=?, updated_at=? WHERE hwid=?""",
+                      (status, key, expires_at, note, now, hwid))
+        else:
+            c.execute("""INSERT INTO licenses (hwid,status,key,expires_at,note,created_at,updated_at)
+                         VALUES (?,?,?,?,?,?,?)""", (hwid,status,key,expires_at,note,now,now))
+        conn.commit()
+    finally:
+        conn.close()
 
-def get_license_by_hwid(hwid):
+def get_licenses():
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT * FROM licenses WHERE hwid = ?", (hwid,))
-    row = c.fetchone(); conn.close()
-    return row
-
-def list_licenses(limit=200):
-    conn = get_db(); c = conn.cursor()
-    c.execute("SELECT * FROM licenses ORDER BY updated_at DESC LIMIT ?", (limit,))
+    c.execute("SELECT * FROM licenses ORDER BY updated_at DESC")
     rows = c.fetchall(); conn.close(); return rows
 
-def update_status(hwid, status, expires_at=None, note=None, key=None):
+def update_status_db(hwid, status, expires_at=None, note=None, key=None):
     now = datetime.utcnow().isoformat()
     conn = get_db(); c = conn.cursor()
     c.execute("""UPDATE licenses SET status=?, expires_at=?, note=?, key=?, updated_at=? WHERE hwid=?""",
               (status, expires_at, note, key, now, hwid))
     conn.commit(); conn.close()
 
-def hwid_expired_or_revoke_if_needed(row):
-    """
-    Check a DB row and if expires_at passed, mark revoked/expired.
-    Returns effective status string.
-    """
-    if not row:
-        return "error"
+# Lisans Durum Kontrolü
+def check_expiry(row):
+    if not row: return "error"
     status = row["status"]
-    exp = row["expires_at"]
-    if exp:
+    if row["expires_at"]:
         try:
-            exp_dt = datetime.fromisoformat(exp)
+            exp_dt = datetime.fromisoformat(row["expires_at"])
             if datetime.utcnow() > exp_dt:
-                # expire it
-                update_status(row["hwid"], "revoked", expires_at=exp, note="expired")
+                update_status_db(row["hwid"], "revoked", row["expires_at"], "Süre doldu (Expired)")
                 return "revoked"
-        except Exception:
-            pass
+        except: pass
     return status
 
-# API endpoint that the desktop client expects
-# e.g. GET /api/lisans?hwid=XXXX
+# --- API ---
 @app.route("/api/lisans", methods=["GET"])
 def api_lisans():
     hwid = request.args.get("hwid", "").strip()
-    if not hwid:
-        return jsonify({"status":"error", "message":"hwid required"}), 400
+    if not hwid: return jsonify({"status":"error", "message":"HWID gerekli"}), 400
 
-    row = get_license_by_hwid(hwid)
+    conn = get_db(); c = conn.cursor()
+    c.execute("SELECT * FROM licenses WHERE hwid = ?", (hwid,))
+    row = c.fetchone(); conn.close()
+
     if not row:
-        # not found -> pending by default (or return error). We'll return pending so admin can see.
-        upsert_license(hwid, status="pending", key=None, expires_at=None, note="auto-created pending")
-        return jsonify({"status":"pending", "message":"Awaiting admin approval", "hwid":hwid})
-    # check expiry and auto-update if needed
-    effective_status = hwid_expired_or_revoke_if_needed(row)
-    # If ok -> return license key in format client expects
-    if effective_status == "ok":
-        # client-side code expects something like LNR_KEY::BASE64DATA or raw key. we'll return LNR_KEY::<base64>
-        payload = row["key"] or ""
-        if payload:
-            return jsonify({"status":"ok", "key": f"LNR_KEY::{payload}"})
-        else:
-            # no local key stored; return ok but no key (client will treat ok -> try to save)
-            return jsonify({"status":"ok", "key": ""})
-    elif effective_status in ("pending",):
-        return jsonify({"status":"pending", "message":"Onay bekleniyor", "hwid":hwid})
-    elif effective_status in ("revoked","error","revoked_by_admin"):
-        return jsonify({"status":"error", "message":"Lisans reddedildi veya süresi doldu", "hwid":hwid})
+        upsert_license(hwid, status="pending", note="Otomatik talep")
+        return jsonify({"status":"pending", "message":"Onay Bekleniyor", "hwid":hwid})
+
+    status = check_expiry(row)
+    
+    if status == "ok":
+        return jsonify({"status":"ok", "key": f"LNR_KEY::{row['key']}" if row['key'] else ""})
+    elif status == "pending":
+        return jsonify({"status":"pending", "message":"Onay Bekleniyor"})
     else:
-        return jsonify({"status":"error", "message":"Bilinmeyen durum", "hwid":hwid})
+        return jsonify({"status":"error", "message":"Lisans Gecersiz"})
 
-# --- Admin UI (very small, password protected) ---
-def is_logged_in():
-    return session.get("admin_logged") is True
-
+# --- ADMİN PANELİ ---
 @app.route("/admin/login", methods=["GET","POST"])
 def admin_login():
     if request.method == "POST":
-        user = request.form.get("username","")
-        passwd = request.form.get("password","")
-        if user == ADMIN_USER and check_password_hash(ADMIN_PASS, passwd):
+        user = request.form.get("username")
+        password = request.form.get("password")
+        
+        # Kullanıcı adı kontrolü yok, sadece şifreye bakıyoruz (Basitlik için)
+        if check_password_hash(ADMIN_PASS_HASH, password):
             session["admin_logged"] = True
-            flash("Giriş başarılı", "success")
+            session.permanent = True
             return redirect(url_for("admin_index"))
-        flash("Kullanıcı adı veya parola hatalı", "danger")
+        else:
+            flash("Hatalı Şifre!", "danger")
+            
     return render_template("login.html")
 
 @app.route("/admin/logout")
 def admin_logout():
-    session.pop("admin_logged", None)
-    flash("Çıkış yapıldı", "info")
+    session.clear()
     return redirect(url_for("admin_login"))
 
 @app.route("/admin")
 def admin_index():
-    if not is_logged_in():
-        return redirect(url_for("admin_login"))
-    rows = list_licenses()
-    # convert to dicts for template
-    data = []
-    for r in rows:
-        r = dict(r)
-        # effective status (and display)
-        eff = hwid_expired_or_revoke_if_needed(r)
-        r["effective_status"] = eff
-        data.append(r)
-    return render_template("admin_index.html", licenses=data)
+    if not session.get("admin_logged"): return redirect(url_for("admin_login"))
+    
+    raw_rows = get_licenses()
+    rows = []
+    stats = {"total": 0, "active": 0, "pending": 0, "banned": 0}
+    
+    for r in raw_rows:
+        r_dict = dict(r)
+        eff_status = check_expiry(r)
+        r_dict["effective_status"] = eff_status
+        
+        # İstatistik
+        stats["total"] += 1
+        if eff_status == "ok": stats["active"] += 1
+        elif eff_status == "pending": stats["pending"] += 1
+        else: stats["banned"] += 1
+        
+        rows.append(r_dict)
+        
+    return render_template("admin_index.html", licenses=rows, stats=stats)
 
-@app.route("/admin/approve", methods=["POST"])
-def admin_approve():
-    if not is_logged_in(): return redirect(url_for("admin_login"))
+# Admin İşlemleri
+@app.route("/admin/action", methods=["POST"])
+def admin_action():
+    if not session.get("admin_logged"): return redirect(url_for("admin_login"))
+    
+    action = request.form.get("action")
     hwid = request.form.get("hwid")
-    days = int(request.form.get("days", "30"))
+    days = int(request.form.get("days", 30))
     note = request.form.get("note", "")
-    # create a simple license payload (base64 of JSON) - adapt to your encryption scheme
-    payload_obj = {"hwid": hwid, "bitis": (datetime.utcnow() + timedelta(days=days)).date().isoformat()}
-    payload_b64 = base64.urlsafe_b64encode(str(payload_obj).encode()).decode()
-    expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat()
-    upsert_license(hwid, status="ok", key=payload_b64, expires_at=expires_at, note=note)
-    flash(f"{hwid} onaylandı ({days} gün).", "success")
-    return redirect(url_for("admin_index"))
 
-@app.route("/admin/revoke", methods=["POST"])
-def admin_revoke():
-    if not is_logged_in(): return redirect(url_for("admin_login"))
-    hwid = request.form.get("hwid")
-    note = request.form.get("note", "revoked_by_admin")
-    update_status(hwid, "revoked", expires_at=None, note=note)
-    flash(f"{hwid} reddedildi/iptal edildi.", "warning")
-    return redirect(url_for("admin_index"))
+    if action == "approve":
+        # Basit bir key üretimi (json -> base64)
+        exp_date = (datetime.utcnow() + timedelta(days=days))
+        payload = {"hwid": hwid, "bitis": exp_date.strftime("%Y-%m-%d")}
+        key_b64 = base64.urlsafe_b64encode(str(payload).encode()).decode()
+        
+        upsert_license(hwid, "ok", key=key_b64, expires_at=exp_date.isoformat(), note=note or "Onaylandi")
+        flash(f"{hwid} onaylandı.", "success")
+        
+    elif action == "revoke":
+        update_status_db(hwid, "revoked", note=note or "Reddedildi")
+        flash(f"{hwid} engellendi.", "warning")
+        
+    elif action == "delete":
+        conn = get_db(); c = conn.cursor()
+        c.execute("DELETE FROM licenses WHERE hwid=?", (hwid,))
+        conn.commit(); conn.close()
+        flash(f"{hwid} silindi.", "danger")
 
-@app.route("/admin/reactivate", methods=["POST"])
-def admin_reactivate():
-    if not is_logged_in(): return redirect(url_for("admin_login"))
-    hwid = request.form.get("hwid")
-    days = int(request.form.get("days", "30"))
-    note = request.form.get("note", "reactivated")
-    payload_obj = {"hwid": hwid, "bitis": (datetime.utcnow() + timedelta(days=days)).date().isoformat()}
-    payload_b64 = base64.urlsafe_b64encode(str(payload_obj).encode()).decode()
-    expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat()
-    update_status(hwid, "ok", expires_at=expires_at, note=note, key=payload_b64)
-    flash(f"{hwid} tekrar aktif edildi ({days} gün).", "success")
     return redirect(url_for("admin_index"))
-
-# admin create manual pending or delete endpoints (optional)
-@app.route("/admin/delete", methods=["POST"])
-def admin_delete():
-    if not is_logged_in(): return redirect(url_for("admin_login"))
-    hwid = request.form.get("hwid")
-    conn = get_db(); c = conn.cursor(); c.execute("DELETE FROM licenses WHERE hwid=?", (hwid,)); conn.commit(); conn.close()
-    flash(f"{hwid} silindi.", "info")
-    return redirect(url_for("admin_index"))
-
-# health & root
-@app.route("/")
-def index():
-    return "HWID License Server. Admin: /admin"
 
 if __name__ == "__main__":
     init_db()
-    app.run(host=APP_HOST, port=APP_PORT)
+    # Gunicorn kullanırken app.run çalışmaz ama yerel test için kalsın
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
