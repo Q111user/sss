@@ -1,21 +1,97 @@
-<!doctype html>
-<html>
-  <head><meta charset="utf-8"><title>Admin Giriş</title></head>
-  <body>
-    <h2>Admin Giriş</h2>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <ul>
-        {% for cat, msg in messages %}
-          <li><strong>{{ cat }}:</strong> {{ msg }}</li>
-        {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
-    <form method="post">
-      <label>Kullanıcı: <input name="username" value="admin"></label><br>
-      <label>Parola: <input type="password" name="password"></label><br>
-      <button type="submit">Giriş</button>
-    </form>
-  </body>
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lunar Haven | Admin Giriş</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0f0f13;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .card {
+            background-color: #1a1b26;
+            border: 1px solid #2f334d;
+            box-shadow: 0 0 20px rgba(137, 180, 250, 0.1);
+            width: 100%;
+            max-width: 400px;
+        }
+        .btn-primary {
+            background-color: #7aa2f7;
+            border-color: #7aa2f7;
+            color: #15161e;
+            font-weight: bold;
+        }
+        .btn-primary:hover {
+            background-color: #89b4fa;
+            border-color: #89b4fa;
+        }
+        .form-control {
+            background-color: #24283b;
+            border: 1px solid #414868;
+            color: #c0caf5;
+        }
+        .form-control:focus {
+            background-color: #24283b;
+            color: #c0caf5;
+            border-color: #7aa2f7;
+            box-shadow: 0 0 0 0.2rem rgba(122, 162, 247, 0.25);
+        }
+        .brand-title {
+            color: #c0caf5;
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-6 col-lg-4">
+                <div class="card p-4">
+                    <div class="card-body">
+                        <h3 class="brand-title">LUNAR HAVEN</h3>
+                        <p class="text-center text-muted mb-4">Yönetici Paneli</p>
+                        
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                          {% if messages %}
+                            {% for category, message in messages %}
+                              <div class="alert alert-{{ category }} py-2">{{ message }}</div>
+                            {% endfor %}
+                          {% endif %}
+                        {% endwith %}
+
+                        <form method="post">
+                            <div class="mb-3">
+                                <label class="form-label text-muted">Kullanıcı Adı</label>
+                                <input type="text" name="username" class="form-control" value="admin" required>
+                            </div>
+                            <div class="mb-4">
+                                <label class="form-label text-muted">Şifre</label>
+                                <input type="password" name="password" class="form-control" required>
+                            </div>
+                            <div class="d-grid">
+                                <button type="submit" class="btn btn-primary">Giriş Yap</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                <div class="text-center mt-3">
+                    <small class="text-muted">Secure HWID Management System</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
 </html>
