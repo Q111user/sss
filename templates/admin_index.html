@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lunar Admin | Dashboard</title>
+    <title>Lunar Panel | Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         body { background-color: #0f0f13; color: #a9b1d6; font-family: 'Segoe UI', sans-serif; }
         .navbar { background-color: #1a1b26; border-bottom: 1px solid #2f334d; }
         .stat-card { background-color: #1a1b26; border: 1px solid #2f334d; border-radius: 10px; padding: 15px; }
+        .custom-card { background-color: #1a1b26; border: 1px solid #2f334d; margin-bottom: 20px; }
         .table-dark { --bs-table-bg: #1a1b26; --bs-table-border-color: #2f334d; }
         .badge-pending { background-color: #e0af68; color: #15161e; }
         .badge-active { background-color: #9ece6a; color: #15161e; }
         .badge-banned { background-color: #f7768e; color: #15161e; }
         .hwid-text { font-family: monospace; color: #7aa2f7; font-size: 0.9em; }
-        .action-btn { width: 32px; height: 32px; padding: 0; line-height: 32px; text-align: center; }
     </style>
 </head>
 <body>
@@ -23,153 +23,124 @@
 <nav class="navbar navbar-expand-lg navbar-dark mb-4 px-3">
     <a class="navbar-brand fw-bold text-white" href="#">🌙 LUNAR ADMIN</a>
     <div class="ms-auto">
-        <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger btn-sm">
-            <i class="fas fa-sign-out-alt"></i> Çıkış
-        </a>
+        <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger btn-sm">Çıkış</a>
     </div>
 </nav>
 
 <div class="container-fluid px-4">
     <div class="row mb-4">
-        <div class="col-md-3">
-            <div class="stat-card text-center">
-                <h6 class="text-muted">Toplam Lisans</h6>
-                <h3 class="text-white">{{ stats.total }}</h3>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="stat-card text-center">
-                <h6 class="text-success">Aktif</h6>
-                <h3 class="text-white">{{ stats.active }}</h3>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="stat-card text-center">
-                <h6 class="text-warning">Bekleyen</h6>
-                <h3 class="text-white">{{ stats.pending }}</h3>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="stat-card text-center">
-                <h6 class="text-danger">Engelli/Süresi Dolmuş</h6>
-                <h3 class="text-white">{{ stats.banned }}</h3>
-            </div>
-        </div>
+        <div class="col-md-3"><div class="stat-card text-center"><h6 class="text-muted">Toplam</h6><h3 class="text-white">{{ stats.total }}</h3></div></div>
+        <div class="col-md-3"><div class="stat-card text-center"><h6 class="text-success">Aktif</h6><h3 class="text-white">{{ stats.active }}</h3></div></div>
+        <div class="col-md-3"><div class="stat-card text-center"><h6 class="text-warning">Bekleyen</h6><h3 class="text-white">{{ stats.pending }}</h3></div></div>
+        <div class="col-md-3"><div class="stat-card text-center"><h6 class="text-danger">Kapalı</h6><h3 class="text-white">{{ stats.banned }}</h3></div></div>
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
-                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                    {{ message }}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                </div>
+                <div class="alert alert-{{ category }} alert-dismissible fade show">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
             {% endfor %}
         {% endif %}
     {% endwith %}
 
-    <div class="card bg-dark border-secondary">
-        <div class="card-header border-secondary d-flex justify-content-between align-items-center">
-            <h5 class="mb-0 text-white"><i class="fas fa-users"></i> Lisans Yönetimi</h5>
-            <span class="badge bg-secondary">Son Güncelleme: Şimdi</span>
+    <div class="card custom-card">
+        <div class="card-header border-secondary bg-warning bg-opacity-10 text-warning">
+            <h5 class="mb-0"><i class="fas fa-clock"></i> Onay Bekleyen Talepler</h5>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-dark table-hover mb-0 align-middle">
                     <thead>
-                        <tr class="text-uppercase text-secondary" style="font-size: 0.85rem;">
-                            <th>Durum</th>
-                            <th>HWID</th>
-                            <th>Bitiş Tarihi</th>
-                            <th>Notlar</th>
-                            <th class="text-end">İşlemler</th>
-                        </tr>
+                        <tr class="text-secondary"><th>HWID</th><th>Talep Tarihi</th><th>İşlem</th></tr>
                     </thead>
                     <tbody>
-                        {% for row in licenses %}
+                        {% for row in pending_licenses %}
                         <tr>
+                            <td><span class="hwid-text">{{ row.hwid }}</span></td>
+                            <td>{{ row.created_at[:10] }}</td>
                             <td>
-                                {% if row.effective_status == 'ok' %}
-                                    <span class="badge badge-active"><i class="fas fa-check"></i> Aktif</span>
-                                {% elif row.effective_status == 'pending' %}
-                                    <span class="badge badge-pending"><i class="fas fa-clock"></i> Bekliyor</span>
-                                {% else %}
-                                    <span class="badge badge-banned"><i class="fas fa-ban"></i> Kapalı</span>
-                                {% endif %}
-                            </td>
-                            <td><span class="hwid-text" title="{{ row.hwid }}">{{ row.hwid }}</span></td>
-                            <td>{{ row.expires_at[:10] if row.expires_at else '-' }}</td>
-                            <td><small class="text-muted">{{ row.note }}</small></td>
-                            <td class="text-end">
-                                <button class="btn btn-success btn-sm action-btn" data-bs-toggle="modal" data-bs-target="#modalApprove{{ row.id }}" title="Onayla">
-                                    <i class="fas fa-check"></i>
-                                </button>
-                                
+                                <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#modalApprove{{ row.id }}">Onayla</button>
                                 <form action="{{ url_for('admin_action') }}" method="POST" class="d-inline">
-                                    <input type="hidden" name="action" value="revoke">
-                                    <input type="hidden" name="hwid" value="{{ row.hwid }}">
-                                    <button class="btn btn-warning btn-sm action-btn" title="Engelle">
-                                        <i class="fas fa-ban"></i>
-                                    </button>
-                                </form>
-
-                                <form action="{{ url_for('admin_action') }}" method="POST" class="d-inline" onsubmit="return confirm('Bu lisansı tamamen silmek istediğine emin misin?');">
                                     <input type="hidden" name="action" value="delete">
                                     <input type="hidden" name="hwid" value="{{ row.hwid }}">
-                                    <button class="btn btn-danger btn-sm action-btn" title="Sil">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
+                                    <button class="btn btn-danger btn-sm">Sil</button>
                                 </form>
                             </td>
                         </tr>
-
-                        <div class="modal fade" id="modalApprove{{ row.id }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal fade" id="modalApprove{{ row.id }}" tabindex="-1">
                             <div class="modal-dialog modal-dialog-centered">
                                 <div class="modal-content bg-dark border-secondary text-light">
-                                    <div class="modal-header border-secondary">
-                                        <h5 class="modal-title">Lisans Onayla</h5>
-                                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                                    </div>
+                                    <div class="modal-header border-secondary"><h5 class="modal-title">Onayla: {{ row.hwid[:8] }}...</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
                                     <form action="{{ url_for('admin_action') }}" method="POST">
                                         <div class="modal-body">
                                             <input type="hidden" name="action" value="approve">
                                             <input type="hidden" name="hwid" value="{{ row.hwid }}">
-                                            <div class="mb-3">
-                                                <label class="form-label">Süre (Gün)</label>
-                                                <select name="days" class="form-select bg-secondary text-white border-0">
-                                                    <option value="7">7 Gün (Haftalık)</option>
-                                                    <option value="30" selected>30 Gün (Aylık)</option>
-                                                    <option value="365">365 Gün (Yıllık)</option>
-                                                    <option value="9999">Sınırsız</option>
-                                                </select>
-                                            </div>
-                                            <div class="mb-3">
-                                                <label class="form-label">Müşteri Notu</label>
-                                                <input type="text" name="note" class="form-control bg-secondary text-white border-0" placeholder="Örn: Discord üzerinden alındı">
-                                            </div>
+                                            <div class="mb-3"><label>Süre</label><select name="days" class="form-select bg-secondary text-white border-0"><option value="30">30 Gün</option><option value="365">1 Yıl</option><option value="9999">Sınırsız</option></select></div>
+                                            <div class="mb-3"><label>Not</label><input name="note" class="form-control bg-secondary text-white border-0" placeholder="Müşteri adı vb."></div>
                                         </div>
-                                        <div class="modal-footer border-secondary">
-                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">İptal</button>
-                                            <button type="submit" class="btn btn-primary">Onayla ve Aktifleştir</button>
-                                        </div>
+                                        <div class="modal-footer border-secondary"><button type="submit" class="btn btn-primary">Kaydet</button></div>
                                     </form>
                                 </div>
                             </div>
                         </div>
+                        {% else %}
+                        <tr><td colspan="3" class="text-center text-muted py-3">Bekleyen talep yok.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
-            {% if not licenses %}
-            <div class="text-center p-5 text-muted">
-                <i class="fas fa-inbox fa-3x mb-3"></i>
-                <p>Henüz kayıtlı lisans verisi yok.</p>
-            </div>
-            {% endif %}
         </div>
     </div>
-</div>
 
+    <div class="card custom-card">
+        <div class="card-header border-secondary">
+            <h5 class="mb-0 text-white"><i class="fas fa-list"></i> Lisans Listesi (Aktif & Geçmiş)</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-dark table-hover mb-0 align-middle">
+                    <thead>
+                        <tr class="text-secondary">
+                            <th>Durum</th>
+                            <th>HWID</th>
+                            <th>Kalan Gün</th>
+                            <th>Not</th>
+                            <th class="text-end">Yönet</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in active_licenses %}
+                        <tr>
+                            <td>
+                                {% if row.effective_status == 'ok' %} <span class="badge badge-active">Aktif</span>
+                                {% else %} <span class="badge badge-banned">Kapalı</span> {% endif %}
+                            </td>
+                            <td><span class="hwid-text">{{ row.hwid }}</span></td>
+                            <td class="fw-bold {{ 'text-danger' if row.remaining_days == 'Süresi Doldu' else 'text-success' }}">{{ row.remaining_days }}</td>
+                            <td><small class="text-muted">{{ row.note }}</small></td>
+                            <td class="text-end">
+                                <form action="{{ url_for('admin_action') }}" method="POST" class="d-inline">
+                                    <input type="hidden" name="action" value="revoke">
+                                    <input type="hidden" name="hwid" value="{{ row.hwid }}">
+                                    <button class="btn btn-warning btn-sm" title="Erişimi Kes"><i class="fas fa-ban"></i></button>
+                                </form>
+                                <form action="{{ url_for('admin_action') }}" method="POST" class="d-inline" onsubmit="return confirm('Silinsin mi?');">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="hwid" value="{{ row.hwid }}">
+                                    <button class="btn btn-danger btn-sm" title="Sil"><i class="fas fa-trash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-3">Kayıt bulunamadı.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
