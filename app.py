@@ -6,11 +6,11 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, f
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # --- AYARLAR ---
+# Veritabanı yolu (Render'da 'data' klasörü yoksa kod oluşturacak)
 DATABASE = os.environ.get("DB_PATH", "data/licenses.db")
 SECRET_KEY = os.environ.get("FLASK_SECRET", "lunar-secret-key-change-me")
 
-# Şifre Mantığı: Render'da 'ADMIN_PASS' değişkenine ne yazarsan şifren o olur.
-# Varsayılan: admin123
+# Şifre Ayarı: Render'daki ADMIN_PASS değişkenini alır
 RAW_PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
 ADMIN_PASS_HASH = generate_password_hash(RAW_PASSWORD)
 
@@ -18,14 +18,19 @@ app = Flask(__name__)
 app.config.update(SECRET_KEY=SECRET_KEY)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
-# DB Yardımcıları
+# --- VERİTABANI YARDIMCILARI ---
 def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    os.makedirs(os.path.dirname(DATABASE) or "data", exist_ok=True)
+    """Veritabanı klasörünü ve tabloyu oluşturur."""
+    # Klasörün var olduğundan emin ol (Render'da hata veren kısım burasıydı)
+    directory = os.path.dirname(DATABASE)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+
     conn = get_db()
     c = conn.cursor()
     c.execute("""
@@ -42,8 +47,15 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    print(f"Veritabani baslatildi: {DATABASE}")
 
-# Veritabanı işlemleri (Okuma/Yazma)
+# --- KRİTİK DÜZELTME BURADA ---
+# Uygulama kodları yüklenirken veritabanını hemen oluşturuyoruz.
+# Bu sayede Gunicorn çalışınca veritabanı hazır oluyor.
+with app.app_context():
+    init_db()
+
+# --- İŞLEVLER ---
 def upsert_license(hwid, status="pending", key=None, expires_at=None, note=None):
     now = datetime.utcnow().isoformat()
     conn = get_db(); c = conn.cursor()
@@ -72,7 +84,6 @@ def update_status_db(hwid, status, expires_at=None, note=None, key=None):
               (status, expires_at, note, key, now, hwid))
     conn.commit(); conn.close()
 
-# Lisans Durum Kontrolü
 def check_expiry(row):
     if not row: return "error"
     status = row["status"]
@@ -85,7 +96,7 @@ def check_expiry(row):
         except: pass
     return status
 
-# --- API ---
+# --- API ENDPOINT ---
 @app.route("/api/lisans", methods=["GET"])
 def api_lisans():
     hwid = request.args.get("hwid", "").strip()
@@ -108,21 +119,18 @@ def api_lisans():
     else:
         return jsonify({"status":"error", "message":"Lisans Gecersiz"})
 
-# --- ADMİN PANELİ ---
+# --- ADMIN PANELİ ---
 @app.route("/admin/login", methods=["GET","POST"])
 def admin_login():
     if request.method == "POST":
-        user = request.form.get("username")
         password = request.form.get("password")
-        
-        # Kullanıcı adı kontrolü yok, sadece şifreye bakıyoruz (Basitlik için)
+        # Şifre kontrolü
         if check_password_hash(ADMIN_PASS_HASH, password):
             session["admin_logged"] = True
             session.permanent = True
             return redirect(url_for("admin_index"))
         else:
             flash("Hatalı Şifre!", "danger")
-            
     return render_template("login.html")
 
 @app.route("/admin/logout")
@@ -142,18 +150,14 @@ def admin_index():
         r_dict = dict(r)
         eff_status = check_expiry(r)
         r_dict["effective_status"] = eff_status
-        
-        # İstatistik
         stats["total"] += 1
         if eff_status == "ok": stats["active"] += 1
         elif eff_status == "pending": stats["pending"] += 1
         else: stats["banned"] += 1
-        
         rows.append(r_dict)
         
     return render_template("admin_index.html", licenses=rows, stats=stats)
 
-# Admin İşlemleri
 @app.route("/admin/action", methods=["POST"])
 def admin_action():
     if not session.get("admin_logged"): return redirect(url_for("admin_login"))
@@ -164,11 +168,9 @@ def admin_action():
     note = request.form.get("note", "")
 
     if action == "approve":
-        # Basit bir key üretimi (json -> base64)
         exp_date = (datetime.utcnow() + timedelta(days=days))
         payload = {"hwid": hwid, "bitis": exp_date.strftime("%Y-%m-%d")}
         key_b64 = base64.urlsafe_b64encode(str(payload).encode()).decode()
-        
         upsert_license(hwid, "ok", key=key_b64, expires_at=exp_date.isoformat(), note=note or "Onaylandi")
         flash(f"{hwid} onaylandı.", "success")
         
@@ -184,7 +186,9 @@ def admin_action():
 
     return redirect(url_for("admin_index"))
 
+@app.route("/")
+def index():
+    return "Lunar HWID Server is Running."
+
 if __name__ == "__main__":
-    init_db()
-    # Gunicorn kullanırken app.run çalışmaz ama yerel test için kalsın
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
