@@ -6,11 +6,8 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, f
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # --- AYARLAR ---
-# Veritabanı yolu (Render'da 'data' klasörü yoksa kod oluşturacak)
 DATABASE = os.environ.get("DB_PATH", "data/licenses.db")
 SECRET_KEY = os.environ.get("FLASK_SECRET", "lunar-secret-key-change-me")
-
-# Şifre Ayarı: Render'daki ADMIN_PASS değişkenini alır
 RAW_PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
 ADMIN_PASS_HASH = generate_password_hash(RAW_PASSWORD)
 
@@ -18,19 +15,16 @@ app = Flask(__name__)
 app.config.update(SECRET_KEY=SECRET_KEY)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
-# --- VERİTABANI YARDIMCILARI ---
+# --- VERİTABANI ---
 def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    """Veritabanı klasörünü ve tabloyu oluşturur."""
-    # Klasörün var olduğundan emin ol (Render'da hata veren kısım burasıydı)
     directory = os.path.dirname(DATABASE)
     if directory and not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
-
     conn = get_db()
     c = conn.cursor()
     c.execute("""
@@ -47,15 +41,11 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print(f"Veritabani baslatildi: {DATABASE}")
 
-# --- KRİTİK DÜZELTME BURADA ---
-# Uygulama kodları yüklenirken veritabanını hemen oluşturuyoruz.
-# Bu sayede Gunicorn çalışınca veritabanı hazır oluyor.
 with app.app_context():
     init_db()
 
-# --- İŞLEVLER ---
+# --- YARDIMCI FONKSİYONLAR ---
 def upsert_license(hwid, status="pending", key=None, expires_at=None, note=None):
     now = datetime.utcnow().isoformat()
     conn = get_db(); c = conn.cursor()
@@ -63,9 +53,11 @@ def upsert_license(hwid, status="pending", key=None, expires_at=None, note=None)
         c.execute("SELECT id FROM licenses WHERE hwid = ?", (hwid,))
         row = c.fetchone()
         if row:
+            # Mevcut kaydı güncelle
             c.execute("""UPDATE licenses SET status=?, key=?, expires_at=?, note=?, updated_at=? WHERE hwid=?""",
                       (status, key, expires_at, note, now, hwid))
         else:
+            # Yeni kayıt
             c.execute("""INSERT INTO licenses (hwid,status,key,expires_at,note,created_at,updated_at)
                          VALUES (?,?,?,?,?,?,?)""", (hwid,status,key,expires_at,note,now,now))
         conn.commit()
@@ -91,12 +83,14 @@ def check_expiry(row):
         try:
             exp_dt = datetime.fromisoformat(row["expires_at"])
             if datetime.utcnow() > exp_dt:
-                update_status_db(row["hwid"], "revoked", row["expires_at"], "Süre doldu (Expired)")
+                # Veritabanında güncellemeye gerek yok, anlık kontrol yeterli
+                # Ancak 'revoked' olarak işaretlemek istersek burada update_status_db çağrılabilir.
+                # Şimdilik sadece durumu döndürüyoruz.
                 return "revoked"
         except: pass
     return status
 
-# --- API ENDPOINT ---
+# --- API ---
 @app.route("/api/lisans", methods=["GET"])
 def api_lisans():
     hwid = request.args.get("hwid", "").strip()
@@ -119,12 +113,11 @@ def api_lisans():
     else:
         return jsonify({"status":"error", "message":"Lisans Gecersiz"})
 
-# --- ADMIN PANELİ ---
+# --- ADMIN ROUTES ---
 @app.route("/admin/login", methods=["GET","POST"])
 def admin_login():
     if request.method == "POST":
         password = request.form.get("password")
-        # Şifre kontrolü
         if check_password_hash(ADMIN_PASS_HASH, password):
             session["admin_logged"] = True
             session.permanent = True
@@ -143,20 +136,46 @@ def admin_index():
     if not session.get("admin_logged"): return redirect(url_for("admin_login"))
     
     raw_rows = get_licenses()
-    rows = []
+    
+    pending_list = []
+    active_list = []
+    
     stats = {"total": 0, "active": 0, "pending": 0, "banned": 0}
     
     for r in raw_rows:
         r_dict = dict(r)
         eff_status = check_expiry(r)
         r_dict["effective_status"] = eff_status
+        
+        # İstatistikler
         stats["total"] += 1
         if eff_status == "ok": stats["active"] += 1
         elif eff_status == "pending": stats["pending"] += 1
         else: stats["banned"] += 1
-        rows.append(r_dict)
+
+        # Kalan Gün Hesaplama
+        remaining_str = "-"
+        if r_dict.get("expires_at"):
+            try:
+                exp_dt = datetime.fromisoformat(r_dict["expires_at"])
+                delta = exp_dt - datetime.utcnow()
+                if delta.days < 0:
+                    remaining_str = "Süresi Doldu"
+                else:
+                    remaining_str = f"{delta.days} Gün"
+            except: pass
+        r_dict["remaining_days"] = remaining_str
+
+        # Listelere Ayırma
+        if eff_status == "pending":
+            pending_list.append(r_dict)
+        else:
+            active_list.append(r_dict)
         
-    return render_template("admin_index.html", licenses=rows, stats=stats)
+    return render_template("admin_index.html", 
+                           pending_licenses=pending_list, 
+                           active_licenses=active_list, 
+                           stats=stats)
 
 @app.route("/admin/action", methods=["POST"])
 def admin_action():
@@ -169,14 +188,16 @@ def admin_action():
 
     if action == "approve":
         exp_date = (datetime.utcnow() + timedelta(days=days))
+        # Basit JSON payload
         payload = {"hwid": hwid, "bitis": exp_date.strftime("%Y-%m-%d")}
         key_b64 = base64.urlsafe_b64encode(str(payload).encode()).decode()
-        upsert_license(hwid, "ok", key=key_b64, expires_at=exp_date.isoformat(), note=note or "Onaylandi")
-        flash(f"{hwid} onaylandı.", "success")
+        
+        upsert_license(hwid, "ok", key=key_b64, expires_at=exp_date.isoformat(), note=note)
+        flash(f"{hwid} onaylandı ({days} gün).", "success")
         
     elif action == "revoke":
-        update_status_db(hwid, "revoked", note=note or "Reddedildi")
-        flash(f"{hwid} engellendi.", "warning")
+        update_status_db(hwid, "revoked", note=note or "Yönetici tarafından iptal")
+        flash(f"{hwid} erişimi kapatıldı.", "warning")
         
     elif action == "delete":
         conn = get_db(); c = conn.cursor()
@@ -188,7 +209,7 @@ def admin_action():
 
 @app.route("/")
 def index():
-    return "Lunar HWID Server is Running."
+    return "Lunar License Server Active."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
